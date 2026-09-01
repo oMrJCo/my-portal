@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <title>My Portal</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div>
+        <p class="eyebrow">MY WORKSPACE</p>
+        <h1>My Portal</h1>
+        <p class="sub">รวมทางเข้าเครื่องมือที่ใช้งานประจำ</p>
+      </div>
+      <button id="addBtn" class="primary">＋ เพิ่มปุ่ม</button>
+    </header>
+
+    <section id="empty" class="empty" hidden>
+      <div class="empty-icon">＋</div>
+      <h2>ยังไม่มีปุ่ม</h2>
+      <p>เพิ่มชื่อและลิงก์ของระบบที่ต้องการใช้งาน</p>
+      <button class="primary" id="emptyAddBtn">เพิ่มปุ่มแรก</button>
+    </section>
+
+    <section id="grid" class="grid" aria-live="polite"></section>
+  </main>
+
+  <dialog id="appDialog">
+    <form id="appForm" method="dialog">
+      <div class="dialog-head">
+        <h2 id="dialogTitle">เพิ่มปุ่ม</h2>
+        <button type="button" class="icon-btn" id="closeBtn" aria-label="ปิด">×</button>
+      </div>
+
+      <label>
+        ชื่อปุ่ม
+        <input id="nameInput" maxlength="60" placeholder="เช่น Payroll" required>
+      </label>
+
+      <label>
+        Link
+        <input id="urlInput" type="url" placeholder="https://example.com" required>
+      </label>
+
+      <div class="actions">
+        <button type="button" class="ghost" id="cancelBtn">ยกเลิก</button>
+        <button type="submit" class="primary">บันทึก</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
