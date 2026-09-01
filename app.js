@@ -1,8 +1,7 @@
 const API_URL =
   "https://script.google.com/macros/s/AKfycbxcIKJlImEKiqOi2dAaHimmYIpOBGtSBEUKh_FNwWu6bQTdeQchaJzmpIQj7n0p_vBY/exec";
 
-const CACHE_KEY =
-  "myPortalCloudCache.v1";
+const CACHE_KEY = "myPortalOnline.v1";
 
 let apps = [];
 let editingIndex = null;
@@ -42,30 +41,17 @@ const cancelBtn =
   document.querySelector("#cancelBtn");
 
 
-function setLoading(state) {
-  loading = state;
-
-  if (addBtn) {
-    addBtn.disabled = state;
-
-    addBtn.textContent =
-      state
-        ? "กำลังโหลด..."
-        : "＋ เพิ่มปุ่ม";
-  }
-}
-
-
 function safeUrl(url) {
+  if (!url) return "#";
+
   try {
-    const parsed =
-      new URL(url);
+    const u = new URL(url);
 
     if (
-      parsed.protocol === "https:" ||
-      parsed.protocol === "http:"
+      u.protocol === "http:" ||
+      u.protocol === "https:"
     ) {
-      return parsed.href;
+      return u.href;
     }
 
     return "#";
@@ -76,7 +62,7 @@ function safeUrl(url) {
 }
 
 
-function getHost(url) {
+function displayHost(url) {
   try {
     return new URL(url).hostname;
   } catch {
@@ -98,13 +84,9 @@ function saveCache() {
 function loadCache() {
   try {
     const raw =
-      localStorage.getItem(
-        CACHE_KEY
-      );
+      localStorage.getItem(CACHE_KEY);
 
-    if (!raw) {
-      return [];
-    }
+    if (!raw) return [];
 
     const data =
       JSON.parse(raw);
@@ -119,88 +101,136 @@ function loadCache() {
 }
 
 
-async function loadApps() {
-  const response =
-    await fetch(
-      `${API_URL}?action=list&t=${Date.now()}`,
-      {
-        method: "GET",
-        cache: "no-store"
-      }
-    );
+function setLoading(state) {
+  loading = state;
 
-  if (!response.ok) {
-    throw new Error(
-      "โหลดข้อมูลไม่สำเร็จ"
-    );
+  if (addBtn) {
+    addBtn.disabled = state;
+
+    addBtn.textContent =
+      state
+        ? "กำลังโหลด..."
+        : "＋ เพิ่มปุ่ม";
   }
-
-  const data =
-    await response.json();
-
-  if (!data.success) {
-    throw new Error(
-      data.message ||
-      "โหลดข้อมูลไม่สำเร็จ"
-    );
-  }
-
-  return Array.isArray(data.apps)
-    ? data.apps
-    : [];
 }
 
 
-async function sendAction(data) {
-  const body =
-    new URLSearchParams();
+/*
+  ใช้ JSONP แทน fetch
+  เพื่อไม่ติด CORS ระหว่าง
+  GitHub Pages กับ Google Apps Script
+*/
+function request(action, params = {}) {
+  return new Promise(
+    (resolve, reject) => {
 
-  Object.entries(data)
-    .forEach(([key, value]) => {
-      body.append(
-        key,
-        value ?? ""
+      const callbackName =
+        "__portal_cb_" +
+        Date.now() +
+        "_" +
+        Math.floor(
+          Math.random() * 100000
+        );
+
+      const script =
+        document.createElement(
+          "script"
+        );
+
+      const query =
+        new URLSearchParams({
+          action: action,
+          callback: callbackName,
+          t: Date.now(),
+          ...params
+        });
+
+      const timeout =
+        setTimeout(() => {
+          cleanup();
+
+          reject(
+            new Error(
+              "เชื่อมต่อข้อมูลกลางไม่ได้"
+            )
+          );
+        }, 15000);
+
+
+      function cleanup() {
+        clearTimeout(timeout);
+
+        try {
+          delete window[
+            callbackName
+          ];
+        } catch {}
+
+        if (script.parentNode) {
+          script.parentNode
+            .removeChild(script);
+        }
+      }
+
+
+      window[callbackName] =
+        function(result) {
+
+          cleanup();
+
+          if (
+            result &&
+            result.success
+          ) {
+            resolve(result);
+          } else {
+            reject(
+              new Error(
+                result?.message ||
+                "ดำเนินการไม่สำเร็จ"
+              )
+            );
+          }
+        };
+
+
+      script.onerror =
+        function() {
+
+          cleanup();
+
+          reject(
+            new Error(
+              "เชื่อมต่อข้อมูลกลางไม่ได้"
+            )
+          );
+        };
+
+
+      script.src =
+        API_URL +
+        "?" +
+        query.toString();
+
+      document.body.appendChild(
+        script
       );
-    });
-
-  const response =
-    await fetch(
-      API_URL,
-      {
-        method: "POST",
-        body: body
-      }
-    );
-
-  if (!response.ok) {
-    throw new Error(
-      "เชื่อมต่อระบบไม่ได้"
-    );
-  }
-
-  const result =
-    await response.json();
-
-  if (!result.success) {
-    throw new Error(
-      result.message ||
-      "ดำเนินการไม่สำเร็จ"
-    );
-  }
-
-  return result;
+    }
+  );
 }
 
 
-function askPin() {
-  const pin =
-    prompt("ใส่รหัส Admin");
+async function loadApps() {
+  const result =
+    await request("list");
 
-  if (pin === null) {
-    return null;
-  }
+  apps =
+    Array.isArray(result.apps)
+      ? result.apps
+      : [];
 
-  return pin.trim();
+  saveCache();
+  render();
 }
 
 
@@ -212,6 +242,7 @@ function render() {
 
   empty.hidden = hasApps;
   grid.hidden = !hasApps;
+
 
   apps.forEach(
     (app, index) => {
@@ -244,6 +275,7 @@ function render() {
           "noopener noreferrer";
       }
 
+
       const title =
         document.createElement(
           "h3"
@@ -261,7 +293,7 @@ function render() {
       url.className = "url";
 
       url.textContent =
-        getHost(app.url);
+        displayHost(app.url);
 
 
       const open =
@@ -272,7 +304,9 @@ function render() {
       open.className = "open";
 
       open.textContent =
-        "เปิดระบบ ↗";
+        href === "#"
+          ? "รอใส่ลิงก์"
+          : "เปิดระบบ ↗";
 
 
       link.append(
@@ -292,9 +326,8 @@ function render() {
       more.textContent = "⋯";
 
 
-      more.addEventListener(
-        "click",
-        event => {
+      more.onclick =
+        function(event) {
 
           event.stopPropagation();
 
@@ -315,49 +348,52 @@ function render() {
             );
 
           edit.type = "button";
-
           edit.textContent =
             "แก้ไข";
 
-          edit.onclick = () => {
-            closeMenus();
+          edit.onclick =
+            function() {
 
-            openDialog(index);
-          };
+              closeMenus();
+
+              openDialog(
+                index
+              );
+            };
 
 
-          const remove =
+          const del =
             document.createElement(
               "button"
             );
 
-          remove.type =
-            "button";
-
-          remove.textContent =
+          del.type = "button";
+          del.textContent =
             "ลบ";
 
-          remove.className =
+          del.className =
             "danger";
 
-          remove.onclick =
-            () => {
+          del.onclick =
+            function() {
+
               closeMenus();
 
-              deleteApp(index);
+              deleteApp(
+                index
+              );
             };
 
 
           menu.append(
             edit,
-            remove
+            del
           );
 
           card.appendChild(
             menu
           );
-        }
-      );
+        };
 
 
       card.append(
@@ -375,14 +411,18 @@ function render() {
 
 function closeMenus() {
   document
-    .querySelectorAll(".menu")
+    .querySelectorAll(
+      ".menu"
+    )
     .forEach(
       menu => menu.remove()
     );
 }
 
 
-function openDialog(index = null) {
+function openDialog(
+  index = null
+) {
   closeMenus();
 
   editingIndex = index;
@@ -423,90 +463,37 @@ function closeDialog() {
 }
 
 
-async function refresh() {
-  if (loading) {
-    return;
-  }
-
-  setLoading(true);
-
-  try {
-
-    apps =
-      await loadApps();
-
-    saveCache();
-
-    render();
-
-  } catch (error) {
-
-    const cache =
-      loadCache();
-
-    if (cache.length > 0) {
-
-      apps = cache;
-
-      render();
-
-    } else {
-
-      apps = [];
-
-      render();
-    }
-
-    console.error(error);
-
-  } finally {
-
-    setLoading(false);
-  }
-}
-
-
-async function deleteApp(index) {
+async function deleteApp(
+  index
+) {
   const app =
     apps[index];
 
-  if (!app) {
-    return;
-  }
+  if (!app) return;
 
-  const confirmDelete =
+  const ok =
     confirm(
       `ลบ "${app.name}" ออกจาก Portal?`
     );
 
-  if (!confirmDelete) {
-    return;
-  }
-
-  const pin =
-    askPin();
-
-  if (!pin) {
-    return;
-  }
+  if (!ok) return;
 
   setLoading(true);
 
   try {
 
     const result =
-      await sendAction({
-        action: "delete",
-        pin: pin,
-        id: app.id
-      });
+      await request(
+        "delete",
+        {
+          id: app.id
+        }
+      );
 
     apps =
-      Array.isArray(
-        result.apps
-      )
+      Array.isArray(result.apps)
         ? result.apps
-        : await loadApps();
+        : [];
 
     saveCache();
 
@@ -528,7 +515,7 @@ async function deleteApp(index) {
 
 form.addEventListener(
   "submit",
-  async event => {
+  async function(event) {
 
     event.preventDefault();
 
@@ -538,6 +525,7 @@ form.addEventListener(
     const url =
       urlInput.value.trim();
 
+
     if (!name) {
       alert(
         "กรุณาใส่ชื่อปุ่ม"
@@ -546,23 +534,15 @@ form.addEventListener(
       return;
     }
 
+
     if (
       !url ||
       safeUrl(url) === "#"
     ) {
-
       alert(
-        "กรุณาใส่ Link ที่ขึ้นต้นด้วย https://"
+        "กรุณาใส่ Link ที่ขึ้นต้นด้วย http:// หรือ https://"
       );
 
-      return;
-    }
-
-
-    const pin =
-      askPin();
-
-    if (!pin) {
       return;
     }
 
@@ -571,46 +551,43 @@ form.addEventListener(
 
     try {
 
-      let payload;
+      let result;
+
 
       if (
         editingIndex === null
       ) {
 
-        payload = {
-          action: "add",
-          pin: pin,
-          name: name,
-          url: url
-        };
+        result =
+          await request(
+            "add",
+            {
+              name: name,
+              url: url
+            }
+          );
 
       } else {
 
-        payload = {
-          action: "update",
-          pin: pin,
-          id:
-            apps[
-              editingIndex
-            ].id,
-          name: name,
-          url: url
-        };
+        result =
+          await request(
+            "update",
+            {
+              id:
+                apps[
+                  editingIndex
+                ].id,
+              name: name,
+              url: url
+            }
+          );
       }
 
 
-      const result =
-        await sendAction(
-          payload
-        );
-
-
       apps =
-        Array.isArray(
-          result.apps
-        )
+        Array.isArray(result.apps)
           ? result.apps
-          : await loadApps();
+          : [];
 
 
       saveCache();
@@ -634,33 +611,29 @@ form.addEventListener(
 );
 
 
-addBtn.addEventListener(
-  "click",
-  () => openDialog()
-);
+addBtn.onclick =
+  function() {
+    openDialog();
+  };
 
 
-emptyAddBtn.addEventListener(
-  "click",
-  () => openDialog()
-);
+emptyAddBtn.onclick =
+  function() {
+    openDialog();
+  };
 
 
-closeBtn.addEventListener(
-  "click",
-  closeDialog
-);
+closeBtn.onclick =
+  closeDialog;
 
 
-cancelBtn.addEventListener(
-  "click",
-  closeDialog
-);
+cancelBtn.onclick =
+  closeDialog;
 
 
 document.addEventListener(
   "click",
-  event => {
+  function(event) {
 
     if (
       !event.target.closest(
@@ -676,19 +649,58 @@ document.addEventListener(
 );
 
 
+async function refresh() {
+  if (loading) return;
+
+  setLoading(true);
+
+  try {
+
+    await loadApps();
+
+  } catch (error) {
+
+    const cached =
+      loadCache();
+
+    if (cached.length) {
+      apps = cached;
+      render();
+    }
+
+    console.error(
+      error
+    );
+
+  } finally {
+
+    setLoading(false);
+  }
+}
+
+
+/*
+  เปิดเว็บ:
+  แสดง cache ก่อนเพื่อให้เร็ว
+  แล้ว Sync Google Sheet ทันที
+*/
+apps = loadCache();
+
+render();
+
+refresh();
+
+
+/*
+  กลับมาที่หน้า Portal
+  โหลดข้อมูลล่าสุดอีกครั้ง
+*/
 window.addEventListener(
   "focus",
-  () => {
+  function() {
 
     if (!loading) {
       refresh();
     }
   }
 );
-
-
-apps = loadCache();
-
-render();
-
-refresh();
