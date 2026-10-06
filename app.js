@@ -1,14 +1,12 @@
-const API_URL =
-  "https://script.google.com/macros/s/AKfycbxcIKJlImEKiqOi2dAaHimmYIpOBGtSBEUKh_FNwWu6bQTdeQchaJzmpIQj7n0p_vBY/exec";
-
-const CACHE_KEY = "myPortalOnline.v1";
-const SYNC_INTERVAL = 10000;
+const SUPABASE_URL = "https://dxlngxkuggbgdzmithzx.supabase.co";
+const SUPABASE_KEY = "sb_publishable_sqAwuko-g-Kgzp51YyMT3g_gIAwtEan";
+const TABLE = "portal_apps";
+const CACHE_KEY = "myPortalSupabase.v1";
 
 let apps = [];
-let editingIndex = null;
+let editingId = null;
 let busy = false;
-let syncing = false;
-let lastSnapshot = "";
+let syncTimer = null;
 
 const grid = document.querySelector("#grid");
 const empty = document.querySelector("#empty");
@@ -34,52 +32,38 @@ function safeUrl(url) {
 }
 
 function displayHost(url) {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return url || "";
-  }
+  try { return new URL(url).hostname; }
+  catch { return url || ""; }
 }
 
-function normalizeApps(value) {
-  return Array.isArray(value)
-    ? value.map(app => ({
-        id: String(app?.id || ""),
-        name: String(app?.name || ""),
-        url: String(app?.url || "")
-      }))
-    : [];
-}
-
-function snapshot(value) {
-  return JSON.stringify(normalizeApps(value));
+function normalize(value) {
+  return Array.isArray(value) ? value.map(x => ({
+    id: String(x.id || ""),
+    name: String(x.name || ""),
+    url: String(x.url || ""),
+    sort_order: Number(x.sort_order || 0)
+  })) : [];
 }
 
 function saveCache() {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(apps));
-  } catch {}
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify(apps)); } catch {}
 }
 
 function loadCache() {
-  try {
-    return normalizeApps(JSON.parse(localStorage.getItem(CACHE_KEY) || "[]"));
-  } catch {
-    return [];
-  }
+  try { return normalize(JSON.parse(localStorage.getItem(CACHE_KEY) || "[]")); }
+  catch { return []; }
 }
 
-function applyApps(nextApps, force = false) {
-  const normalized = normalizeApps(nextApps);
-  const nextSnapshot = snapshot(normalized);
+function sameApps(a, b) {
+  return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b));
+}
 
-  if (!force && nextSnapshot === lastSnapshot) return false;
-
+function applyApps(next, force = false) {
+  const normalized = normalize(next);
+  if (!force && sameApps(apps, normalized)) return;
   apps = normalized;
-  lastSnapshot = nextSnapshot;
   saveCache();
   render();
-  return true;
 }
 
 function setBusy(state) {
@@ -90,71 +74,71 @@ function setBusy(state) {
   submitBtn.textContent = state ? "กำลังบันทึก..." : "บันทึก";
 }
 
-function request(action, params = {}) {
-  return new Promise((resolve, reject) => {
-    const callbackName =
-      "__portal_cb_" + Date.now() + "_" + Math.floor(Math.random() * 1000000);
-
-    const script = document.createElement("script");
-    let finished = false;
-
-    const query = new URLSearchParams({
-      action,
-      callback: callbackName,
-      t: Date.now(),
-      ...params
-    });
-
-    const timeout = setTimeout(() => {
-      finish();
-      reject(new Error("เชื่อมต่อข้อมูลกลางไม่ได้"));
-    }, 12000);
-
-    function finish() {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
-      try { delete window[callbackName]; } catch {}
-      script.remove();
+async function api(path = "", options = {}) {
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/${TABLE}${path}`,
+    {
+      ...options,
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+        ...options.headers
+      },
+      cache: "no-store"
     }
+  );
 
-    window[callbackName] = result => {
-      finish();
+  if (!response.ok) {
+    let message = "เชื่อมต่อข้อมูลกลางไม่ได้";
+    try {
+      const body = await response.json();
+      message = body.message || body.details || message;
+    } catch {}
+    throw new Error(message);
+  }
 
-      if (result && result.success) {
-        resolve(result);
-      } else {
-        reject(new Error(result?.message || "ดำเนินการไม่สำเร็จ"));
-      }
-    };
+  if (response.status === 204) return [];
+  return response.json();
+}
 
-    script.onerror = () => {
-      finish();
-      reject(new Error("เชื่อมต่อข้อมูลกลางไม่ได้"));
-    };
+async function loadApps({ quiet = true } = {}) {
+  try {
+    const rows = await api("?select=id,name,url,sort_order&order=sort_order.asc,created_at.asc");
+    applyApps(rows);
+  } catch (error) {
+    console.error("Portal sync:", error);
+    if (!quiet && apps.length === 0) {
+      alert("โหลดข้อมูลไม่สำเร็จ\n" + error.message);
+    }
+  }
+}
 
-    script.src = API_URL + "?" + query.toString();
-    document.head.appendChild(script);
+async function createApp(name, url) {
+  return api("", {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({
+      name,
+      url,
+      sort_order: apps.length
+    })
   });
 }
 
-async function syncApps({ silent = true } = {}) {
-  if (syncing || busy) return;
+async function updateApp(id, name, url) {
+  return api("?id=eq." + encodeURIComponent(id), {
+    method: "PATCH",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({ name, url })
+  });
+}
 
-  syncing = true;
-
-  try {
-    const result = await request("list");
-    applyApps(result.apps);
-  } catch (error) {
-    console.error("Portal sync:", error);
-
-    if (!silent && apps.length === 0) {
-      alert("โหลดข้อมูลไม่สำเร็จ\n" + error.message);
-    }
-  } finally {
-    syncing = false;
-  }
+async function removeApp(id) {
+  return api("?id=eq." + encodeURIComponent(id), {
+    method: "DELETE",
+    headers: { Prefer: "return=representation" }
+  });
 }
 
 function render() {
@@ -164,7 +148,7 @@ function render() {
   empty.hidden = hasApps;
   grid.hidden = !hasApps;
 
-  apps.forEach((app, index) => {
+  apps.forEach(app => {
     const card = document.createElement("article");
     card.className = "card";
 
@@ -210,7 +194,7 @@ function render() {
       edit.textContent = "แก้ไข";
       edit.onclick = () => {
         closeMenus();
-        openDialog(index);
+        openDialog(app.id);
       };
 
       const del = document.createElement("button");
@@ -219,7 +203,7 @@ function render() {
       del.className = "danger";
       del.onclick = () => {
         closeMenus();
-        deleteApp(index);
+        deleteApp(app.id);
       };
 
       menu.append(edit, del);
@@ -235,18 +219,19 @@ function closeMenus() {
   document.querySelectorAll(".menu").forEach(menu => menu.remove());
 }
 
-function openDialog(index = null) {
+function openDialog(id = null) {
   closeMenus();
-  editingIndex = index;
+  editingId = id;
 
-  if (index === null) {
+  if (!id) {
     dialogTitle.textContent = "เพิ่มปุ่ม";
     nameInput.value = "";
     urlInput.value = "";
   } else {
+    const app = apps.find(x => x.id === id);
     dialogTitle.textContent = "แก้ไขปุ่ม";
-    nameInput.value = apps[index]?.name || "";
-    urlInput.value = apps[index]?.url || "";
+    nameInput.value = app?.name || "";
+    urlInput.value = app?.url || "";
   }
 
   dialog.showModal();
@@ -255,20 +240,20 @@ function openDialog(index = null) {
 
 function closeDialog() {
   if (dialog.open) dialog.close();
-  editingIndex = null;
+  editingId = null;
 }
 
-async function deleteApp(index) {
-  const app = apps[index];
+async function deleteApp(id) {
+  const app = apps.find(x => x.id === id);
   if (!app || busy) return;
 
   if (!confirm(`ลบ "${app.name}" ออกจาก Portal?`)) return;
 
   setBusy(true);
-
   try {
-    const result = await request("delete", { id: app.id });
-    applyApps(result.apps, true);
+    await removeApp(id);
+    applyApps(apps.filter(x => x.id !== id), true);
+    await loadApps();
   } catch (error) {
     alert("ลบไม่สำเร็จ\n" + error.message);
   } finally {
@@ -296,24 +281,18 @@ form.addEventListener("submit", async event => {
   setBusy(true);
 
   try {
-    let result;
-
-    if (editingIndex === null) {
-      result = await request("add", { name, url });
+    if (!editingId) {
+      const rows = await createApp(name, url);
+      if (rows[0]) applyApps([...apps, rows[0]], true);
     } else {
-      const app = apps[editingIndex];
-
-      if (!app?.id) throw new Error("ไม่พบรายการที่ต้องการแก้ไข");
-
-      result = await request("update", {
-        id: app.id,
-        name,
-        url
-      });
+      const rows = await updateApp(editingId, name, url);
+      if (rows[0]) {
+        applyApps(apps.map(x => x.id === editingId ? rows[0] : x), true);
+      }
     }
 
-    applyApps(result.apps, true);
     closeDialog();
+    await loadApps();
   } catch (error) {
     alert("บันทึกไม่สำเร็จ\n" + error.message);
   } finally {
@@ -333,32 +312,86 @@ document.addEventListener("click", event => {
 });
 
 /*
-  Cache มีไว้ให้หน้าเปิดเร็วเท่านั้น
-  Google Sheet / Apps Script คือข้อมูลจริง
+  เปิดเร็วด้วย cache แต่ Supabase คือข้อมูลจริง
 */
 apps = loadCache();
-lastSnapshot = snapshot(apps);
 render();
-
-/* เปิดหน้าแล้ว Sync ข้อมูลจริงทันที */
-syncApps({ silent: apps.length > 0 });
+loadApps({ quiet: apps.length > 0 });
 
 /*
-  Sync เบา ๆ ทุก 10 วินาทีเมื่อหน้าเปิดอยู่
-  ถ้าข้อมูลไม่เปลี่ยนจะไม่ render ใหม่ จึงไม่กระพริบ/รีเฟรช
+  Supabase Realtime ผ่าน WebSocket โดยไม่ใช้ Apps Script/JSONP
+  เมื่อเครื่องไหนแก้ข้อมูล เครื่องอื่นจะ reload เฉพาะข้อมูล ไม่ reload หน้า
 */
-setInterval(() => {
-  if (!document.hidden && !dialog.open) {
-    syncApps();
-  }
-}, SYNC_INTERVAL);
+function startRealtime() {
+  const wsUrl =
+    SUPABASE_URL.replace("https://", "wss://") +
+    "/realtime/v1/websocket?apikey=" +
+    encodeURIComponent(SUPABASE_KEY) +
+    "&vsn=1.0.0";
 
-/*
-  กลับมาจากอีกแอป/อีกแท็บ Sync ครั้งเดียว
-  ใช้ visibilitychange แทน focus เพื่อไม่ยิงซ้ำทุกครั้งที่คลิก
-*/
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && !dialog.open) {
-    syncApps();
-  }
-});
+  let socket;
+  let heartbeat;
+  let reconnect;
+
+  const connect = () => {
+    clearTimeout(reconnect);
+    socket = new WebSocket(wsUrl);
+
+    socket.onopen = () => {
+      socket.send(JSON.stringify({
+        topic: "realtime:public:portal_apps",
+        event: "phx_join",
+        payload: {
+          config: {
+            broadcast: { self: false },
+            presence: { key: "" },
+            postgres_changes: [{
+              event: "*",
+              schema: "public",
+              table: "portal_apps"
+            }]
+          },
+          access_token: SUPABASE_KEY
+        },
+        ref: "1"
+      }));
+
+      clearInterval(heartbeat);
+      heartbeat = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({
+            topic: "phoenix",
+            event: "heartbeat",
+            payload: {},
+            ref: String(Date.now())
+          }));
+        }
+      }, 25000);
+    };
+
+    socket.onmessage = event => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.event === "postgres_changes") {
+          clearTimeout(syncTimer);
+          syncTimer = setTimeout(() => loadApps(), 120);
+        }
+      } catch {}
+    };
+
+    socket.onclose = () => {
+      clearInterval(heartbeat);
+      reconnect = setTimeout(connect, 3000);
+    };
+
+    socket.onerror = () => socket.close();
+  };
+
+  connect();
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) loadApps();
+  });
+}
+
+startRealtime();
