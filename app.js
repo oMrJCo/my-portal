@@ -2,65 +2,36 @@ const API_URL =
   "https://script.google.com/macros/s/AKfycbxcIKJlImEKiqOi2dAaHimmYIpOBGtSBEUKh_FNwWu6bQTdeQchaJzmpIQj7n0p_vBY/exec";
 
 const CACHE_KEY = "myPortalOnline.v1";
+const SYNC_INTERVAL = 10000;
 
 let apps = [];
 let editingIndex = null;
-let loading = false;
+let busy = false;
+let syncing = false;
+let lastSnapshot = "";
 
-const grid =
-  document.querySelector("#grid");
-
-const empty =
-  document.querySelector("#empty");
-
-const dialog =
-  document.querySelector("#appDialog");
-
-const form =
-  document.querySelector("#appForm");
-
-const nameInput =
-  document.querySelector("#nameInput");
-
-const urlInput =
-  document.querySelector("#urlInput");
-
-const dialogTitle =
-  document.querySelector("#dialogTitle");
-
-const addBtn =
-  document.querySelector("#addBtn");
-
-const emptyAddBtn =
-  document.querySelector("#emptyAddBtn");
-
-const closeBtn =
-  document.querySelector("#closeBtn");
-
-const cancelBtn =
-  document.querySelector("#cancelBtn");
-
+const grid = document.querySelector("#grid");
+const empty = document.querySelector("#empty");
+const dialog = document.querySelector("#appDialog");
+const form = document.querySelector("#appForm");
+const nameInput = document.querySelector("#nameInput");
+const urlInput = document.querySelector("#urlInput");
+const dialogTitle = document.querySelector("#dialogTitle");
+const addBtn = document.querySelector("#addBtn");
+const emptyAddBtn = document.querySelector("#emptyAddBtn");
+const closeBtn = document.querySelector("#closeBtn");
+const cancelBtn = document.querySelector("#cancelBtn");
+const submitBtn = form.querySelector('button[type="submit"]');
 
 function safeUrl(url) {
   if (!url) return "#";
-
   try {
     const u = new URL(url);
-
-    if (
-      u.protocol === "http:" ||
-      u.protocol === "https:"
-    ) {
-      return u.href;
-    }
-
-    return "#";
-
+    return (u.protocol === "http:" || u.protocol === "https:") ? u.href : "#";
   } catch {
     return "#";
   }
 }
-
 
 function displayHost(url) {
   try {
@@ -70,637 +41,324 @@ function displayHost(url) {
   }
 }
 
+function normalizeApps(value) {
+  return Array.isArray(value)
+    ? value.map(app => ({
+        id: String(app?.id || ""),
+        name: String(app?.name || ""),
+        url: String(app?.url || "")
+      }))
+    : [];
+}
+
+function snapshot(value) {
+  return JSON.stringify(normalizeApps(value));
+}
 
 function saveCache() {
   try {
-    localStorage.setItem(
-      CACHE_KEY,
-      JSON.stringify(apps)
-    );
+    localStorage.setItem(CACHE_KEY, JSON.stringify(apps));
   } catch {}
 }
 
-
 function loadCache() {
   try {
-    const raw =
-      localStorage.getItem(CACHE_KEY);
-
-    if (!raw) return [];
-
-    const data =
-      JSON.parse(raw);
-
-    return Array.isArray(data)
-      ? data
-      : [];
-
+    return normalizeApps(JSON.parse(localStorage.getItem(CACHE_KEY) || "[]"));
   } catch {
     return [];
   }
 }
 
+function applyApps(nextApps, force = false) {
+  const normalized = normalizeApps(nextApps);
+  const nextSnapshot = snapshot(normalized);
 
-function setLoading(state) {
-  loading = state;
+  if (!force && nextSnapshot === lastSnapshot) return false;
 
-  if (addBtn) {
-    addBtn.disabled = state;
-
-    addBtn.textContent =
-      state
-        ? "กำลังโหลด..."
-        : "＋ เพิ่มปุ่ม";
-  }
-}
-
-
-/*
-  ใช้ JSONP แทน fetch
-  เพื่อไม่ติด CORS ระหว่าง
-  GitHub Pages กับ Google Apps Script
-*/
-function request(action, params = {}) {
-  return new Promise(
-    (resolve, reject) => {
-
-      const callbackName =
-        "__portal_cb_" +
-        Date.now() +
-        "_" +
-        Math.floor(
-          Math.random() * 100000
-        );
-
-      const script =
-        document.createElement(
-          "script"
-        );
-
-      const query =
-        new URLSearchParams({
-          action: action,
-          callback: callbackName,
-          t: Date.now(),
-          ...params
-        });
-
-      const timeout =
-        setTimeout(() => {
-          cleanup();
-
-          reject(
-            new Error(
-              "เชื่อมต่อข้อมูลกลางไม่ได้"
-            )
-          );
-        }, 15000);
-
-
-      function cleanup() {
-        clearTimeout(timeout);
-
-        try {
-          delete window[
-            callbackName
-          ];
-        } catch {}
-
-        if (script.parentNode) {
-          script.parentNode
-            .removeChild(script);
-        }
-      }
-
-
-      window[callbackName] =
-        function(result) {
-
-          cleanup();
-
-          if (
-            result &&
-            result.success
-          ) {
-            resolve(result);
-          } else {
-            reject(
-              new Error(
-                result?.message ||
-                "ดำเนินการไม่สำเร็จ"
-              )
-            );
-          }
-        };
-
-
-      script.onerror =
-        function() {
-
-          cleanup();
-
-          reject(
-            new Error(
-              "เชื่อมต่อข้อมูลกลางไม่ได้"
-            )
-          );
-        };
-
-
-      script.src =
-        API_URL +
-        "?" +
-        query.toString();
-
-      document.body.appendChild(
-        script
-      );
-    }
-  );
-}
-
-
-async function loadApps() {
-  const result =
-    await request("list");
-
-  apps =
-    Array.isArray(result.apps)
-      ? result.apps
-      : [];
-
+  apps = normalized;
+  lastSnapshot = nextSnapshot;
   saveCache();
   render();
+  return true;
 }
 
+function setBusy(state) {
+  busy = state;
+  addBtn.disabled = state;
+  emptyAddBtn.disabled = state;
+  submitBtn.disabled = state;
+  submitBtn.textContent = state ? "กำลังบันทึก..." : "บันทึก";
+}
+
+function request(action, params = {}) {
+  return new Promise((resolve, reject) => {
+    const callbackName =
+      "__portal_cb_" + Date.now() + "_" + Math.floor(Math.random() * 1000000);
+
+    const script = document.createElement("script");
+    let finished = false;
+
+    const query = new URLSearchParams({
+      action,
+      callback: callbackName,
+      t: Date.now(),
+      ...params
+    });
+
+    const timeout = setTimeout(() => {
+      finish();
+      reject(new Error("เชื่อมต่อข้อมูลกลางไม่ได้"));
+    }, 12000);
+
+    function finish() {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      try { delete window[callbackName]; } catch {}
+      script.remove();
+    }
+
+    window[callbackName] = result => {
+      finish();
+
+      if (result && result.success) {
+        resolve(result);
+      } else {
+        reject(new Error(result?.message || "ดำเนินการไม่สำเร็จ"));
+      }
+    };
+
+    script.onerror = () => {
+      finish();
+      reject(new Error("เชื่อมต่อข้อมูลกลางไม่ได้"));
+    };
+
+    script.src = API_URL + "?" + query.toString();
+    document.head.appendChild(script);
+  });
+}
+
+async function syncApps({ silent = true } = {}) {
+  if (syncing || busy) return;
+
+  syncing = true;
+
+  try {
+    const result = await request("list");
+    applyApps(result.apps);
+  } catch (error) {
+    console.error("Portal sync:", error);
+
+    if (!silent && apps.length === 0) {
+      alert("โหลดข้อมูลไม่สำเร็จ\n" + error.message);
+    }
+  } finally {
+    syncing = false;
+  }
+}
 
 function render() {
   grid.innerHTML = "";
 
-  const hasApps =
-    apps.length > 0;
-
+  const hasApps = apps.length > 0;
   empty.hidden = hasApps;
   grid.hidden = !hasApps;
 
+  apps.forEach((app, index) => {
+    const card = document.createElement("article");
+    card.className = "card";
 
-  apps.forEach(
-    (app, index) => {
+    const link = document.createElement("a");
+    link.className = "card-link";
 
-      const card =
-        document.createElement(
-          "article"
-        );
+    const href = safeUrl(app.url);
+    link.href = href;
 
-      card.className = "card";
-
-
-      const link =
-        document.createElement(
-          "a"
-        );
-
-      link.className =
-        "card-link";
-
-      const href =
-        safeUrl(app.url);
-
-      link.href = href;
-
-      if (href !== "#") {
-        link.target = "_blank";
-
-        link.rel =
-          "noopener noreferrer";
-      }
-
-
-      const title =
-        document.createElement(
-          "h3"
-        );
-
-      title.textContent =
-        app.name;
-
-
-      const url =
-        document.createElement(
-          "p"
-        );
-
-      url.className = "url";
-
-      url.textContent =
-        displayHost(app.url);
-
-
-      const open =
-        document.createElement(
-          "span"
-        );
-
-      open.className = "open";
-
-      open.textContent =
-        href === "#"
-          ? "รอใส่ลิงก์"
-          : "เปิดระบบ ↗";
-
-
-      link.append(
-        title,
-        url,
-        open
-      );
-
-
-      const more =
-        document.createElement(
-          "button"
-        );
-
-      more.className = "more";
-      more.type = "button";
-      more.textContent = "⋯";
-
-
-      more.onclick =
-        function(event) {
-
-          event.stopPropagation();
-
-          closeMenus();
-
-          const menu =
-            document.createElement(
-              "div"
-            );
-
-          menu.className =
-            "menu";
-
-
-          const edit =
-            document.createElement(
-              "button"
-            );
-
-          edit.type = "button";
-          edit.textContent =
-            "แก้ไข";
-
-          edit.onclick =
-            function() {
-
-              closeMenus();
-
-              openDialog(
-                index
-              );
-            };
-
-
-          const del =
-            document.createElement(
-              "button"
-            );
-
-          del.type = "button";
-          del.textContent =
-            "ลบ";
-
-          del.className =
-            "danger";
-
-          del.onclick =
-            function() {
-
-              closeMenus();
-
-              deleteApp(
-                index
-              );
-            };
-
-
-          menu.append(
-            edit,
-            del
-          );
-
-          card.appendChild(
-            menu
-          );
-        };
-
-
-      card.append(
-        link,
-        more
-      );
-
-      grid.appendChild(
-        card
-      );
+    if (href !== "#") {
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
     }
-  );
-}
 
+    const title = document.createElement("h3");
+    title.textContent = app.name;
+
+    const url = document.createElement("p");
+    url.className = "url";
+    url.textContent = displayHost(app.url);
+
+    const open = document.createElement("span");
+    open.className = "open";
+    open.textContent = href === "#" ? "รอใส่ลิงก์" : "เปิดระบบ ↗";
+
+    link.append(title, url, open);
+
+    const more = document.createElement("button");
+    more.className = "more";
+    more.type = "button";
+    more.textContent = "⋯";
+    more.setAttribute("aria-label", "จัดการ " + app.name);
+
+    more.onclick = event => {
+      event.stopPropagation();
+      closeMenus();
+
+      const menu = document.createElement("div");
+      menu.className = "menu";
+
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.textContent = "แก้ไข";
+      edit.onclick = () => {
+        closeMenus();
+        openDialog(index);
+      };
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "ลบ";
+      del.className = "danger";
+      del.onclick = () => {
+        closeMenus();
+        deleteApp(index);
+      };
+
+      menu.append(edit, del);
+      card.appendChild(menu);
+    };
+
+    card.append(link, more);
+    grid.appendChild(card);
+  });
+}
 
 function closeMenus() {
-  document
-    .querySelectorAll(
-      ".menu"
-    )
-    .forEach(
-      menu => menu.remove()
-    );
+  document.querySelectorAll(".menu").forEach(menu => menu.remove());
 }
 
-
-function openDialog(
-  index = null
-) {
+function openDialog(index = null) {
   closeMenus();
-
   editingIndex = index;
 
   if (index === null) {
-
-    dialogTitle.textContent =
-      "เพิ่มปุ่ม";
-
+    dialogTitle.textContent = "เพิ่มปุ่ม";
     nameInput.value = "";
     urlInput.value = "";
-
   } else {
-
-    dialogTitle.textContent =
-      "แก้ไขปุ่ม";
-
-    nameInput.value =
-      apps[index].name || "";
-
-    urlInput.value =
-      apps[index].url || "";
+    dialogTitle.textContent = "แก้ไขปุ่ม";
+    nameInput.value = apps[index]?.name || "";
+    urlInput.value = apps[index]?.url || "";
   }
 
   dialog.showModal();
-
-  setTimeout(
-    () => nameInput.focus(),
-    50
-  );
+  setTimeout(() => nameInput.focus(), 50);
 }
 
-
 function closeDialog() {
-  dialog.close();
-
+  if (dialog.open) dialog.close();
   editingIndex = null;
 }
 
+async function deleteApp(index) {
+  const app = apps[index];
+  if (!app || busy) return;
 
-async function deleteApp(
-  index
-) {
-  const app =
-    apps[index];
+  if (!confirm(`ลบ "${app.name}" ออกจาก Portal?`)) return;
 
-  if (!app) return;
-
-  const ok =
-    confirm(
-      `ลบ "${app.name}" ออกจาก Portal?`
-    );
-
-  if (!ok) return;
-
-  setLoading(true);
+  setBusy(true);
 
   try {
-
-    const result =
-      await request(
-        "delete",
-        {
-          id: app.id
-        }
-      );
-
-    apps =
-      Array.isArray(result.apps)
-        ? result.apps
-        : [];
-
-    saveCache();
-
-    render();
-
+    const result = await request("delete", { id: app.id });
+    applyApps(result.apps, true);
   } catch (error) {
-
-    alert(
-      "ลบไม่สำเร็จ\n" +
-      error.message
-    );
-
+    alert("ลบไม่สำเร็จ\n" + error.message);
   } finally {
-
-    setLoading(false);
+    setBusy(false);
   }
 }
 
+form.addEventListener("submit", async event => {
+  event.preventDefault();
+  if (busy) return;
 
-form.addEventListener(
-  "submit",
-  async function(event) {
+  const name = nameInput.value.trim();
+  const url = urlInput.value.trim();
 
-    event.preventDefault();
-
-    const name =
-      nameInput.value.trim();
-
-    const url =
-      urlInput.value.trim();
-
-
-    if (!name) {
-      alert(
-        "กรุณาใส่ชื่อปุ่ม"
-      );
-
-      return;
-    }
-
-
-    if (
-      !url ||
-      safeUrl(url) === "#"
-    ) {
-      alert(
-        "กรุณาใส่ Link ที่ขึ้นต้นด้วย http:// หรือ https://"
-      );
-
-      return;
-    }
-
-
-    setLoading(true);
-
-    try {
-
-      let result;
-
-
-      if (
-        editingIndex === null
-      ) {
-
-        result =
-          await request(
-            "add",
-            {
-              name: name,
-              url: url
-            }
-          );
-
-      } else {
-
-        result =
-          await request(
-            "update",
-            {
-              id:
-                apps[
-                  editingIndex
-                ].id,
-              name: name,
-              url: url
-            }
-          );
-      }
-
-
-      apps =
-        Array.isArray(result.apps)
-          ? result.apps
-          : [];
-
-
-      saveCache();
-
-      render();
-
-      closeDialog();
-
-    } catch (error) {
-
-      alert(
-        "บันทึกไม่สำเร็จ\n" +
-        error.message
-      );
-
-    } finally {
-
-      setLoading(false);
-    }
+  if (!name) {
+    alert("กรุณาใส่ชื่อปุ่ม");
+    return;
   }
-);
 
-
-addBtn.onclick =
-  function() {
-    openDialog();
-  };
-
-
-emptyAddBtn.onclick =
-  function() {
-    openDialog();
-  };
-
-
-closeBtn.onclick =
-  closeDialog;
-
-
-cancelBtn.onclick =
-  closeDialog;
-
-
-document.addEventListener(
-  "click",
-  function(event) {
-
-    if (
-      !event.target.closest(
-        ".more"
-      ) &&
-      !event.target.closest(
-        ".menu"
-      )
-    ) {
-      closeMenus();
-    }
+  if (!url || safeUrl(url) === "#") {
+    alert("กรุณาใส่ Link ที่ขึ้นต้นด้วย http:// หรือ https://");
+    return;
   }
-);
 
-
-async function refresh() {
-  if (loading) return;
-
-  setLoading(true);
+  setBusy(true);
 
   try {
+    let result;
 
-    await loadApps();
+    if (editingIndex === null) {
+      result = await request("add", { name, url });
+    } else {
+      const app = apps[editingIndex];
 
-  } catch (error) {
+      if (!app?.id) throw new Error("ไม่พบรายการที่ต้องการแก้ไข");
 
-    const cached =
-      loadCache();
-
-    if (cached.length) {
-      apps = cached;
-      render();
+      result = await request("update", {
+        id: app.id,
+        name,
+        url
+      });
     }
 
-    console.error(
-      error
-    );
-
+    applyApps(result.apps, true);
+    closeDialog();
+  } catch (error) {
+    alert("บันทึกไม่สำเร็จ\n" + error.message);
   } finally {
-
-    setLoading(false);
+    setBusy(false);
   }
-}
+});
 
+addBtn.onclick = () => openDialog();
+emptyAddBtn.onclick = () => openDialog();
+closeBtn.onclick = closeDialog;
+cancelBtn.onclick = closeDialog;
+
+document.addEventListener("click", event => {
+  if (!event.target.closest(".more") && !event.target.closest(".menu")) {
+    closeMenus();
+  }
+});
 
 /*
-  เปิดเว็บ:
-  แสดง cache ก่อนเพื่อให้เร็ว
-  แล้ว Sync Google Sheet ทันที
+  Cache มีไว้ให้หน้าเปิดเร็วเท่านั้น
+  Google Sheet / Apps Script คือข้อมูลจริง
 */
 apps = loadCache();
-
+lastSnapshot = snapshot(apps);
 render();
 
-refresh();
-
+/* เปิดหน้าแล้ว Sync ข้อมูลจริงทันที */
+syncApps({ silent: apps.length > 0 });
 
 /*
-  กลับมาที่หน้า Portal
-  โหลดข้อมูลล่าสุดอีกครั้ง
+  Sync เบา ๆ ทุก 10 วินาทีเมื่อหน้าเปิดอยู่
+  ถ้าข้อมูลไม่เปลี่ยนจะไม่ render ใหม่ จึงไม่กระพริบ/รีเฟรช
 */
-window.addEventListener(
-  "focus",
-  function() {
-
-    if (!loading) {
-      refresh();
-    }
+setInterval(() => {
+  if (!document.hidden && !dialog.open) {
+    syncApps();
   }
-);
+}, SYNC_INTERVAL);
+
+/*
+  กลับมาจากอีกแอป/อีกแท็บ Sync ครั้งเดียว
+  ใช้ visibilitychange แทน focus เพื่อไม่ยิงซ้ำทุกครั้งที่คลิก
+*/
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && !dialog.open) {
+    syncApps();
+  }
+});
